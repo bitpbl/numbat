@@ -39,7 +39,7 @@ static int nb_ensure_mbuf(nb_t *n, size_t bytes) {
     uint8_t *b = (uint8_t*)malloc(bytes);
     if (!b) return 0;
     memset(b, 0, bytes);
-    /* if existing used bytes, copy them to end */
+    // if existing used bytes, copy them to end
     if (n->mantissa && n->m_used) {
         size_t old_off = n->m_len - n->m_used;
         size_t new_off = bytes - n->m_used;
@@ -51,7 +51,7 @@ static int nb_ensure_mbuf(nb_t *n, size_t bytes) {
     return 1;
 }
 
-/* ensure buffer for exponent */
+// ensure buffer for exponent
 static int nb_ensure_ebuf(nb_t *n, size_t bytes) {
     if (n->e_len >= bytes) return 1;
     uint8_t *b = (uint8_t*)malloc(bytes);
@@ -260,7 +260,7 @@ static int nb_exponent_add_u64(nb_t *n, uint64_t v) {
     }
     // if still v or carry remains, insert bytes at front
     if (v != 0 || carry) {
-        // gather remaining bytes into a small buffer
+        // gather remaining bytes into a small buffer (little-endian in addbuf)
         uint8_t addbuf[16];
         int addlen = 0;
         uint64_t rem = v;
@@ -269,17 +269,26 @@ static int nb_exponent_add_u64(nb_t *n, uint64_t v) {
             rem >>= 8;
         }
         if (carry) addbuf[addlen++] = (uint8_t)carry;
-        // reverse into big-endian
-        size_t need = addlen;
-        if (!nb_ensure_ebuf(n, n->e_len + need)) return 0;
-        // shift existing bytes right by need
-        memmove(n->exponent + need, n->exponent, n->e_len);
-        // write leading bytes
-        for (size_t j = 0; j < (size_t)addlen; ++j) {
-            n->exponent[j] = addbuf[addlen - 1 - j];
+        // reverse into big-endian in a tmp buffer and prepend to existing used bytes
+        size_t old_used = n->e_used;
+        size_t totalsz = (size_t)addlen + old_used;
+        uint8_t *tmp = (uint8_t*)malloc(totalsz);
+        if (!tmp) return 0;
+        // write leading big-endian added bytes
+        for (int j = 0; j < addlen; ++j) {
+            tmp[j] = addbuf[addlen - 1 - j];
         }
-        n->e_used += need;
+        // copy existing used bytes (big-endian)
+        if (old_used) {
+            size_t old_off = n->e_len - old_used;
+            memcpy(tmp + addlen, n->exponent + old_off, old_used);
+        }
+        // set exponent to the concatenation (nb_set_exponent_bytes will normalize)
+        int rc = nb_set_exponent_bytes(n, tmp, totalsz, 1);
+        free(tmp);
+        return rc;
     }
+
     nb_normalize(n);
     return 1;
 }
@@ -348,9 +357,12 @@ int nb_exponent_add_signed(nb_t *n, int64_t delta) {
     if (!n) return 0;
     if (delta == 0) return 1;
     if (delta > 0) {
+        // fprintf(stderr, "before add: e_used=%zu, delta=%lld\n", n->e_used, (long long)delta);
+        // huh wtf
+
         uint64_t v = (uint64_t)delta;
         if (nb_exponent_positive(n)) {
-            /* +mag + v */
+            // +mag + v
             return nb_exponent_add_u64(n, v);
         } else {
             // exponent negative: mag_neg - v. If mag_neg > v => remain negative; else flip sign
